@@ -43,14 +43,20 @@ from models import (
 # TODO: Update the routing categories for your domain.
 ROUTER_PROMPT = """You are a query classifier for an AI agent. Given the user's message, respond with EXACTLY one word.
 
+The agent has the following capabilities:
+- Web search (search the internet for any information)
+- News search (find recent news articles on any topic)
+- Get current date and time
+
 Categories:
-- "task" — anything related to the agent's primary domain or tasks it can perform.
+- "task" — ANY request that can be answered using web search, news search, or time lookup. This includes questions about ANY topic, current events, people, companies, technology, science, etc.
 - "greeting" — ONLY simple greetings or questions about the bot itself. Examples: "hi", "hello", "who are you?", "what can you do?".
-- "unrelated" — questions completely unrelated to the agent's domain. Examples: "who is the PM of India?", "what's the weather?".
+- "unrelated" — ONLY requests that require capabilities the agent does NOT have, such as: writing code, editing files, doing math calculations, generating images, or sending emails.
 
 RULES:
-- When in doubt, choose "task".
-- If the message could be a request for action in ANY way, choose "task".
+- When in doubt, ALWAYS choose "task".
+- If the question can be answered by searching the web or looking up news, it is ALWAYS "task".
+- Almost everything is "task" — the agent can search for information on virtually any topic.
 
 Respond with ONLY one word: task, greeting, or unrelated."""
 
@@ -59,8 +65,9 @@ PLANNER_PROMPT = """You are a task planner for an AI agent.
 Given the user's question, produce a short, numbered plan of actions.
 
 Available tools:
-- `example_search` — search for information matching a query.
-- `example_lookup` — look up detailed information for a specific item by ID.
+- `web_search` — search the web for general information using DuckDuckGo.
+- `web_search_news` — search for recent news articles using DuckDuckGo News. Use this for any news-related queries.
+- `get_current_time` — get the current date and time.
 
 RULES:
 1. Pick the MOST SPECIFIC tool for the question.
@@ -86,16 +93,21 @@ GREETING_RESPONSE = """Hello! I'm an **AI Agent** 🤖
 
 I can help you with various tasks. Here's what I can do:
 
-- **Search** for information
-- **Look up** specific items by ID
+- 🔍 **Web Search** — search the internet for any information
+- 📰 **News Search** — find recent news articles on any topic
+- 🕐 **Current Time** — get the current date and time
 
 Ask me a question to get started!"""
 
 UNRELATED_RESPONSE = """I'm an **AI Agent** 🤖
 
-I can only help with tasks within my domain.
+That's outside what I can do. I'm best at:
 
-Please ask a relevant question!"""
+- 🔍 **Web Search** — searching the internet
+- 📰 **News Search** — finding recent news
+- 🕐 **Current Time** — getting the date/time
+
+Try asking me to search for something!"""
 
 INJECTION_RESPONSE = """⚠️ Your message was flagged by our safety system.
 

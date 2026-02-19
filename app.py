@@ -55,8 +55,9 @@ with st.sidebar:
         "**How to use:**\n"
         "Just type a question or request below!\n\n"
         "**Example questions:**\n"
-        "- Search for something\n"
-        "- Look up item ABC-123\n"
+        "- Search the web for the latest AI news\n"
+        "- What's the latest news about OpenAI?\n"
+        "- What time is it right now?\n"
         "- What can you do?\n"
     )
 

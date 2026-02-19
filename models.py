@@ -24,7 +24,7 @@ GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 
 # ── Feature Toggles ────────────────────────────────────────────────────────
 # Set to True to enable safety layers. Both are off by default for speed.
-ENABLE_ROUTER = False           # Query classification (task/greeting/unrelated)
+ENABLE_ROUTER = True           # Query classification (task/greeting/unrelated)
 ENABLE_PLANNER = True          # Action planning before execution
 ENABLE_PROMPT_GUARD = False    # Prompt injection detection (adds ~1-2s latency)
 ENABLE_OUTPUT_SAFETY = False   # Output safety check (adds ~2s latency)
