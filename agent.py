@@ -18,6 +18,7 @@ import asyncio
 import uuid
 from datetime import datetime
 
+import deepagents.graph
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
 from langgraph.checkpoint.memory import MemorySaver
@@ -117,10 +118,22 @@ def build_deep_agent(api_key: str = ""):
     │  everything else ──┼──► StateBackend  (ephemeral, single thread)
     └────────────────────┘
 
-    Chat history compression is handled by the built-in SummarizationMiddleware
-    which condenses older messages to stay within context limits.
+    Chat history compression is forced to trigger at 4000 tokens to 
+    ensure it never hits Groq's 8000 Tokens-Per-Minute limit.
     """
     model = get_chat_model(api_key)
+
+    # Monkey patch the built-in summarization defaults to force it to compress memory
+    # BEFORE we hit Groq's tiny 8000 TPM limit. (Normally it triggers at ~100k+ tokens
+    # based on the model's actual context window, which kills Groq free tier).
+    original_compute = deepagents.graph._compute_summarization_defaults
+    def patched_compute(model):
+        res = original_compute(model)
+        # Deep Agents summarizer sees these as internal thresholds (not API limits)
+        res['trigger'] = ("tokens", 4000)   # When context hits ~4000 tokens, compress it!
+        res['keep'] = ("tokens", 2000)      # Keep the most recent 2000 tokens
+        return res
+    deepagents.graph._compute_summarization_defaults = patched_compute
 
     def make_backend(runtime):
         return CompositeBackend(
@@ -177,6 +190,12 @@ def main():
         if user_input.lower() in ("exit", "quit", "q"):
             print("👋 Bye!")
             break
+        if user_input.lower() == "clear":
+            # Generate a new thread ID to start a fresh memory state
+            thread_id = str(uuid.uuid4())
+            config = {"configurable": {"thread_id": thread_id}}
+            print(f"🧹 History cleared! Started fresh session: {thread_id[:8]}\n")
+            continue
 
         try:
             result = agent.invoke(
@@ -186,7 +205,12 @@ def main():
             final_msg = result["messages"][-1].content
             print(f"\n🤖 {final_msg}\n")
         except Exception as e:
-            print(f"\n⚠️ Error: {e}\n")
+            error_str = str(e)
+            print(f"\n⚠️ Error: {error_str}\n")
+            if "rate_limit_exceeded" in error_str or "413" in error_str:
+                print("💡 Groq Free Tier has an 8,000 Tokens-Per-Minute limit.")
+                print("💡 Since the checkpointer remembers history, your conversation is getting too long.")
+                print("💡 Type 'clear' to reset your chat history and free up tokens!\n")
 
 
 if __name__ == "__main__":

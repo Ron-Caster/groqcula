@@ -72,19 +72,21 @@ def scrape_webpage(url: str) -> dict:
 
         soup = BeautifulSoup(response.text, "html.parser")
 
-        # Remove unwanted elements
-        for tag in soup(["script", "style", "nav", "footer", "header", "aside",
-                         "iframe", "noscript", "svg", "form"]):
+        # Remove truly unwanted elements like scripts and styles
+        for tag in soup(["script", "style", "noscript", "svg"]):
             tag.decompose()
 
-        # Try to get the main content area first
-        main = soup.find("main") or soup.find("article") or soup.find("div", {"role": "main"})
+        # Try to find the most likely content container first,
+        # but don't aggressively delete headers/footers because poorly-formed
+        # HTML can cause the entire page to be nested inside them!
+        main = soup.find("article") or soup.find("main") or soup.find("div", {"role": "main"})
+        
         if main:
             text = main.get_text(separator="\n", strip=True)
         else:
             text = soup.get_text(separator="\n", strip=True)
 
-        # Clean up excessive whitespace
+        # Truncate continuous newlines and spaces
         text = re.sub(r"\n{3,}", "\n\n", text)
         text = re.sub(r" {2,}", " ", text)
 
@@ -98,7 +100,8 @@ def scrape_webpage(url: str) -> dict:
             meta_desc = meta_tag["content"]
 
         # Cap the text to avoid blowing up the context window
-        max_chars = 8000
+        # Groq free tier has a strict 8000 TPM limit, so we keep this small (3000 chars = ~750 tokens)
+        max_chars = 3000
         if len(text) > max_chars:
             text = text[:max_chars] + f"\n\n... [truncated — {len(text)} total characters]"
 
