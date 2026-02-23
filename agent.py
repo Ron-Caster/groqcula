@@ -117,53 +117,39 @@ RESEARCH_SUBAGENT = {
 
 # ── Persistence Layer ──────────────────────────────────────────────────────
 
-def _create_postgres_persistence():
-    """
-    Create PostgreSQL-backed checkpointer and store.
-    Both connect to the same database.
-    Runs setup/migrations on first use.
-    """
-    from langgraph.checkpoint.postgres import PostgresSaver
-    from langgraph.store.postgres import PostgresStore
+from contextlib import contextmanager
 
-    # Create checkpointer (short-term: conversation threads)
-    checkpointer_ctx = PostgresSaver.from_conn_string(DATABASE_URL)
-    checkpointer = checkpointer_ctx.__enter__()
-    checkpointer.setup()  # Run migrations
-
-    # Create store (long-term: /memories/ files)
-    store_ctx = PostgresStore.from_conn_string(DATABASE_URL)
-    store = store_ctx.__enter__()
-    store.setup()  # Run migrations
-
-    return checkpointer, store
-
-
-def _create_memory_persistence():
-    """
-    Create in-memory checkpointer and store (dev/fallback mode).
-    Data is lost on restart.
-    """
-    return MemorySaver(), InMemoryStore()
-
-
+@contextmanager
 def get_persistence():
     """
     Get the appropriate persistence layer based on DATABASE_URL.
-    Returns (checkpointer, store) tuple.
+    Yields (checkpointer, store) tuple.
+    Handles the context managers for proper connection pooling lifecycle.
     """
-    if DATABASE_URL:
-        try:
-            checkpointer, store = _create_postgres_persistence()
-            print(f"  💾 Storage: PostgreSQL ({DATABASE_URL[:40]}...)")
-            return checkpointer, store
-        except Exception as e:
-            print(f"  ⚠️ Postgres connection failed: {e}")
-            print(f"  💾 Falling back to in-memory storage")
-            return _create_memory_persistence()
-    else:
+    if not DATABASE_URL:
         print(f"  💾 Storage: In-memory (set DATABASE_URL for persistence)")
-        return _create_memory_persistence()
+        yield _create_memory_persistence()
+        return
+
+    from langgraph.checkpoint.postgres import PostgresSaver
+    from langgraph.store.postgres import PostgresStore
+
+    try:
+        # We must keep the context managers open for the lifetime of the application
+        # so the connection pools don't close immediately.
+        with PostgresSaver.from_conn_string(DATABASE_URL) as checkpointer:
+            checkpointer.setup()
+            
+            with PostgresStore.from_conn_string(DATABASE_URL) as store:
+                store.setup()
+                
+                print(f"  💾 Storage: PostgreSQL ({DATABASE_URL[:40]}...)")
+                yield checkpointer, store
+                
+    except Exception as e:
+        print(f"  ⚠️ Postgres connection failed: {e}")
+        print(f"  💾 Falling back to in-memory storage")
+        yield _create_memory_persistence()
 
 
 # ── Agent Builder ──────────────────────────────────────────────────────────
@@ -223,37 +209,36 @@ def main():
     print(f"  Session: {thread_id[:8]}")
 
     # Initialize persistence (Postgres or in-memory fallback)
-    checkpointer, store = get_persistence()
-
-    print(f"  Memory: /memories/ (persistent) + ephemeral state")
-    print(f"  Type 'exit' or 'quit' to leave. Ctrl+C also works.")
-    print(f"{'='*60}\n")
-
-    agent = build_deep_agent(GROQ_API_KEY, checkpointer, store)
-    config = {"configurable": {"thread_id": thread_id}}
-
-    while True:
-        try:
-            user_input = input("You: ").strip()
-        except (KeyboardInterrupt, EOFError):
-            print("\n👋 Bye!")
-            break
-
-        if not user_input:
-            continue
-        if user_input.lower() in ("exit", "quit", "q"):
-            print("👋 Bye!")
-            break
-
-        try:
-            result = agent.invoke(
-                {"messages": [{"role": "user", "content": user_input}]},
-                config=config,
-            )
-            final_msg = result["messages"][-1].content
-            print(f"\n🤖 {final_msg}\n")
-        except Exception as e:
-            print(f"\n⚠️ Error: {e}\n")
+    with get_persistence() as (checkpointer, store):
+        print(f"  Memory: /memories/ (persistent) + ephemeral state")
+        print(f"  Type 'exit' or 'quit' to leave. Ctrl+C also works.")
+        print(f"{'='*60}\n")
+    
+        agent = build_deep_agent(GROQ_API_KEY, checkpointer, store)
+        config = {"configurable": {"thread_id": thread_id}}
+    
+        while True:
+            try:
+                user_input = input("You: ").strip()
+            except (KeyboardInterrupt, EOFError):
+                print("\n👋 Bye!")
+                break
+    
+            if not user_input:
+                continue
+            if user_input.lower() in ("exit", "quit", "q"):
+                print("👋 Bye!")
+                break
+    
+            try:
+                result = agent.invoke(
+                    {"messages": [{"role": "user", "content": user_input}]},
+                    config=config,
+                )
+                final_msg = result["messages"][-1].content
+                print(f"\n🤖 {final_msg}\n")
+            except Exception as e:
+                print(f"\n⚠️ Error: {e}\n")
 
 
 if __name__ == "__main__":
