@@ -5,25 +5,11 @@ Uses the LangChain Deep Agents SDK to build a powerful agent with:
 - Context management (virtual filesystem)
 - Subagent delegation (task tool)
 - Automatic tool calling
-- Persistent memory via PostgreSQL (checkpointer + store)
 - Long-term memory (CompositeBackend with StoreBackend)
 - Chat history compression (SummarizationMiddleware)
 
-Memory architecture:
-┌──────────────────────────────────────────────────────────┐
-│  Short-term memory (PostgresSaver checkpointer)          │
-│  → Conversation threads persisted to Postgres            │
-│  → Survives restarts, resumable by thread_id             │
-│                                                          │
-│  Long-term memory (CompositeBackend)                     │
-│  → /memories/* → PostgresStore (persistent cross-thread) │
-│  → everything else → StateBackend (ephemeral per-thread) │
-└──────────────────────────────────────────────────────────┘
-
-Set DATABASE_URL env var to connect to Postgres:
-  export DATABASE_URL="postgresql://user:pass@localhost:5432/groqcula"
-
-Falls back to in-memory storage if DATABASE_URL is not set (dev mode).
+Replaces the manual LangGraph pipeline (guard → router → plan → execute → safety)
+with a single create_deep_agent() call that handles all of this internally.
 """
 
 import os
@@ -31,11 +17,6 @@ import sys
 import asyncio
 import uuid
 from datetime import datetime
-
-from dotenv import load_dotenv
-
-# Load environment variables from .env file
-load_dotenv()
 
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
@@ -46,11 +27,10 @@ from models import get_chat_model, get_primary_model_name, GROQ_API_KEY
 from tools import ALL_TOOLS
 
 
-# ── Database Config ────────────────────────────────────────────────────────
-DATABASE_URL = os.environ.get("DATABASE_URL", "")
-
-
 # ── System Prompt ───────────────────────────────────────────────────────────
+# Built as a function so we can inject the current date/time dynamically.
+# Planning, routing, and execution are handled by the SDK's built-in
+# middleware (TodoListMiddleware, SubAgentMiddleware, SummarizationMiddleware)
 
 def get_system_prompt() -> str:
     """Generate the system prompt with the current date/time injected."""
@@ -89,7 +69,7 @@ You have persistent memory stored under `/memories/`. Use it to remember things 
 
 When the user tells you their preferences or asks you to remember something, save it to `/memories/`.
 At the start of conversations, check `/memories/` to recall what you know about the user.
-Files under `/memories/` persist across all conversations and survive restarts.
+Files under `/memories/` persist across all conversations.
 Files elsewhere (like `/notes.txt` or `/draft.md`) are ephemeral and lost when the session ends.
 
 ## Greetings
@@ -101,6 +81,7 @@ politely explain what you can do instead.
 """
 
 # ── Research Subagent ──────────────────────────────────────────────────────
+# A specialized subagent for in-depth research tasks.
 
 RESEARCH_SUBAGENT = {
     "name": "researcher",
@@ -108,66 +89,36 @@ RESEARCH_SUBAGENT = {
     "system_prompt": (
         "You are an expert researcher. Your job is to conduct thorough research "
         "using the available search tools and produce a polished, well-structured "
-        "report with sources cited. Use search(topic='general') for general queries and "
-        "search(topic='news') for recent events."
+        "report with sources cited. Use web_search for general queries and "
+        "web_search_news for recent events."
     ),
     "tools": ALL_TOOLS,
 }
 
 
-# ── Persistence Layer ──────────────────────────────────────────────────────
+# ── Shared store + checkpointer (module-level singletons) ─────────────────
+# These must persist across the lifetime of the process so that:
+# - MemorySaver retains conversation threads
+# - InMemoryStore retains /memories/ files across threads
 
-from contextlib import contextmanager
-
-@contextmanager
-def get_persistence():
-    """
-    Get the appropriate persistence layer based on DATABASE_URL.
-    Yields (checkpointer, store) tuple.
-    Handles the context managers for proper connection pooling lifecycle.
-    """
-    if not DATABASE_URL:
-        print(f"  💾 Storage: In-memory (set DATABASE_URL for persistence)")
-        yield _create_memory_persistence()
-        return
-
-    from langgraph.checkpoint.postgres import PostgresSaver
-    from langgraph.store.postgres import PostgresStore
-
-    try:
-        # We must keep the context managers open for the lifetime of the application
-        # so the connection pools don't close immediately.
-        with PostgresSaver.from_conn_string(DATABASE_URL) as checkpointer:
-            checkpointer.setup()
-            
-            with PostgresStore.from_conn_string(DATABASE_URL) as store:
-                store.setup()
-                
-                print(f"  💾 Storage: PostgreSQL ({DATABASE_URL[:40]}...)")
-                yield checkpointer, store
-                
-    except Exception as e:
-        print(f"  ⚠️ Postgres connection failed: {e}")
-        print(f"  💾 Falling back to in-memory storage")
-        yield _create_memory_persistence()
+_store = InMemoryStore()
+_checkpointer = MemorySaver()
 
 
-# ── Agent Builder ──────────────────────────────────────────────────────────
-
-def build_deep_agent(api_key: str, checkpointer, store):
+def build_deep_agent(api_key: str = ""):
     """
     Build a Deep Agent using the Deep Agents SDK.
 
     Memory architecture (CompositeBackend):
-    ┌────────────────────────────────────────────────────────┐
-    │   Deep Agent                                           │
-    │                                                        │
-    │  /memories/* ──► StoreBackend  (Postgres / persistent) │
-    │  everything  ──► StateBackend  (ephemeral, per-thread) │
-    │                                                        │
-    │  Checkpointer ── PostgresSaver (conversation threads)  │
-    │  SummarizationMiddleware (auto-compresses chat history)│
-    └────────────────────────────────────────────────────────┘
+    ┌────────────────────┐
+    │   Deep Agent       │
+    │                    │
+    │  /memories/* ──────┼──► StoreBackend  (persistent across threads)
+    │  everything else ──┼──► StateBackend  (ephemeral, single thread)
+    └────────────────────┘
+
+    Chat history compression is handled by the built-in SummarizationMiddleware
+    which condenses older messages to stay within context limits.
     """
     model = get_chat_model(api_key)
 
@@ -185,8 +136,8 @@ def build_deep_agent(api_key: str, checkpointer, store):
         system_prompt=get_system_prompt(),
         subagents=[RESEARCH_SUBAGENT],
         backend=make_backend,
-        store=store,
-        checkpointer=checkpointer,
+        store=_store,
+        checkpointer=_checkpointer,
     )
 
     return agent
@@ -207,38 +158,35 @@ def main():
     print(f"  🧛 Groqcula Deep Agent")
     print(f"  Model: {get_primary_model_name()}")
     print(f"  Session: {thread_id[:8]}")
+    print(f"  Memory: /memories/ (persistent) + ephemeral state")
+    print(f"  Type 'exit' or 'quit' to leave. Ctrl+C also works.")
+    print(f"{'='*60}\n")
 
-    # Initialize persistence (Postgres or in-memory fallback)
-    with get_persistence() as (checkpointer, store):
-        print(f"  Memory: /memories/ (persistent) + ephemeral state")
-        print(f"  Type 'exit' or 'quit' to leave. Ctrl+C also works.")
-        print(f"{'='*60}\n")
-    
-        agent = build_deep_agent(GROQ_API_KEY, checkpointer, store)
-        config = {"configurable": {"thread_id": thread_id}}
-    
-        while True:
-            try:
-                user_input = input("You: ").strip()
-            except (KeyboardInterrupt, EOFError):
-                print("\n👋 Bye!")
-                break
-    
-            if not user_input:
-                continue
-            if user_input.lower() in ("exit", "quit", "q"):
-                print("👋 Bye!")
-                break
-    
-            try:
-                result = agent.invoke(
-                    {"messages": [{"role": "user", "content": user_input}]},
-                    config=config,
-                )
-                final_msg = result["messages"][-1].content
-                print(f"\n🤖 {final_msg}\n")
-            except Exception as e:
-                print(f"\n⚠️ Error: {e}\n")
+    agent = build_deep_agent(GROQ_API_KEY)
+    config = {"configurable": {"thread_id": thread_id}}
+
+    while True:
+        try:
+            user_input = input("You: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print("\n👋 Bye!")
+            break
+
+        if not user_input:
+            continue
+        if user_input.lower() in ("exit", "quit", "q"):
+            print("👋 Bye!")
+            break
+
+        try:
+            result = agent.invoke(
+                {"messages": [{"role": "user", "content": user_input}]},
+                config=config,
+            )
+            final_msg = result["messages"][-1].content
+            print(f"\n🤖 {final_msg}\n")
+        except Exception as e:
+            print(f"\n⚠️ Error: {e}\n")
 
 
 if __name__ == "__main__":

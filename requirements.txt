@@ -2,8 +2,6 @@ deepagents
 langchain
 langchain-groq
 langgraph
-langgraph-checkpoint-postgres
-psycopg[binary,pool]
 streamlit
 ddgs
 requests
