@@ -1,66 +1,128 @@
 """
-LangChain Tools — Agent Template
-Define your agent's tools here. Each tool should be a function decorated with @tool.
-The agent will use these tools to perform actions during the EXECUTE stage.
+Tools — Groqcula Deep Agent
+Define your agent's tools here. Each tool is a plain Python function.
+The Deep Agent will automatically convert them into tool-callable functions.
 """
 
-from langchain_core.tools import tool
+import re
+from datetime import datetime
 from ddgs import DDGS
+import requests
+from bs4 import BeautifulSoup
 
 
-# ── CUSTOMIZE: Define your tools below ──────────────────────────────────────
+# ── Search ──────────────────────────────────────────────────────────────────
 
-@tool
-def web_search(query: str) -> list[dict]:
-    """Search the web using DuckDuckGo. Returns a list of results with title, url, and snippet."""
+def search(query: str, topic: str = "general") -> list[dict]:
+    """Search the web using DuckDuckGo. Set topic to 'general' for web pages or
+    'news' for recent news articles. Returns a list of results."""
     try:
         with DDGS() as ddgs:
-            results = list(ddgs.text(query, max_results=5))
-        return [
-            {
-                "title": r.get("title", ""),
-                "url": r.get("href", ""),
-                "snippet": r.get("body", ""),
-            }
-            for r in results
-        ]
+            if topic == "news":
+                results = list(ddgs.news(query, max_results=5))
+                return [
+                    {
+                        "title": r.get("title", ""),
+                        "url": r.get("url", ""),
+                        "snippet": r.get("body", ""),
+                        "date": r.get("date", ""),
+                        "source": r.get("source", ""),
+                    }
+                    for r in results
+                ]
+            else:
+                results = list(ddgs.text(query, max_results=5))
+                return [
+                    {
+                        "title": r.get("title", ""),
+                        "url": r.get("href", ""),
+                        "snippet": r.get("body", ""),
+                    }
+                    for r in results
+                ]
     except Exception as e:
         return [{"error": str(e)}]
 
 
-@tool
-def web_search_news(query: str) -> list[dict]:
-    """Search for recent news articles using DuckDuckGo News. Returns a list of news results with title, url, snippet, date, and source."""
-    try:
-        with DDGS() as ddgs:
-            results = list(ddgs.news(query, max_results=5))
-        return [
-            {
-                "title": r.get("title", ""),
-                "url": r.get("url", ""),
-                "snippet": r.get("body", ""),
-                "date": r.get("date", ""),
-                "source": r.get("source", ""),
-            }
-            for r in results
-        ]
-    except Exception as e:
-        return [{"error": str(e)}]
+# ── Current Time ────────────────────────────────────────────────────────────
 
-
-@tool
 def get_current_time() -> str:
     """Get the current date and time."""
-    from datetime import datetime
     return datetime.now().isoformat()
 
 
+# ── Web Scraper ─────────────────────────────────────────────────────────────
+
+def scrape_webpage(url: str) -> dict:
+    """Scrape a webpage and extract its text content. Give it any URL and it will
+    fetch the page, strip out scripts/styles/nav, and return the clean text.
+    Use this to read full articles, event pages, documentation, etc."""
+    try:
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            ),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+        response = requests.get(url, headers=headers, timeout=15, allow_redirects=True)
+        response.raise_for_status()
+
+        soup = BeautifulSoup(response.text, "html.parser")
+
+        # Remove unwanted elements
+        for tag in soup(["script", "style", "nav", "footer", "header", "aside",
+                         "iframe", "noscript", "svg", "form"]):
+            tag.decompose()
+
+        # Try to get the main content area first
+        main = soup.find("main") or soup.find("article") or soup.find("div", {"role": "main"})
+        if main:
+            text = main.get_text(separator="\n", strip=True)
+        else:
+            text = soup.get_text(separator="\n", strip=True)
+
+        # Clean up excessive whitespace
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        text = re.sub(r" {2,}", " ", text)
+
+        # Get page title
+        title = soup.title.string.strip() if soup.title and soup.title.string else ""
+
+        # Get meta description
+        meta_desc = ""
+        meta_tag = soup.find("meta", attrs={"name": "description"})
+        if meta_tag and meta_tag.get("content"):
+            meta_desc = meta_tag["content"]
+
+        # Cap the text to avoid blowing up the context window
+        max_chars = 8000
+        if len(text) > max_chars:
+            text = text[:max_chars] + f"\n\n... [truncated — {len(text)} total characters]"
+
+        return {
+            "url": url,
+            "title": title,
+            "meta_description": meta_desc,
+            "content": text,
+            "content_length": len(text),
+        }
+
+    except requests.exceptions.Timeout:
+        return {"url": url, "error": "Request timed out after 15 seconds"}
+    except requests.exceptions.HTTPError as e:
+        return {"url": url, "error": f"HTTP error: {e.response.status_code}"}
+    except Exception as e:
+        return {"url": url, "error": str(e)}
+
 
 # ── Tool Registry ──────────────────────────────────────────────────────────
-# Add all your tools to this list. The agent will have access to all of them.
+# Deep Agents accept plain Python functions — no @tool decorator needed.
 
 ALL_TOOLS = [
-    web_search,
-    web_search_news,
+    search,
     get_current_time,
+    scrape_webpage,
 ]
