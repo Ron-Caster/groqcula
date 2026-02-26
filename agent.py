@@ -46,10 +46,9 @@ When searching for events or news, only return results that are AFTER today's da
 Discard any results from the past.
 
 ## Your Capabilities
-You have access to the following tools:
-- **search** — search the web using DuckDuckGo. Use topic='general' for web pages or topic='news' for recent news articles.
-- **get_current_time** — get the current date and time
-- **scrape_webpage** — visit any URL and extract its full text content. Use this to read articles, event pages, documentation, etc.
+You have access to the following built-in tools:
+- **web_assistant** — search the web or visit specific websites using natural language instructions
+- **get_current_time** — get the current local date and time
 
 You also have filesystem tools (read_file, write_file, edit_file, ls) for managing context.
 
@@ -89,9 +88,8 @@ RESEARCH_SUBAGENT = {
     "description": "Used for in-depth research on complex topics. Delegates web searching and news gathering to produce comprehensive reports.",
     "system_prompt": (
         "You are an expert researcher. Your job is to conduct thorough research "
-        "using the available search tools and produce a polished, well-structured "
-        "report with sources cited. Use web_search for general queries and "
-        "web_search_news for recent events."
+        "using the available `web_assistant` tool and produce "
+        "a polished, well-structured report with sources cited."
     ),
     "tools": ALL_TOOLS,
 }

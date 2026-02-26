@@ -1,22 +1,8 @@
-"""
-Model Configuration — Groqcula Deep Agent
-Simplified model config for the Deep Agents SDK.
-Uses langchain-groq's ChatGroq with fallback chains.
-
-The Deep Agents SDK handles planning, routing, and execution internally —
-we only need to provide the model and tools.
-"""
-
 import os
 from langchain_groq import ChatGroq
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 
-
-# ── Model Registry ─────────────────────────────────────────────────────────
-# Primary and fallback models for the deep agent.
-# The Deep Agent SDK uses a single model for all stages, so we pick the best
-# general-purpose model and configure fallbacks.
 
 MODEL_REGISTRY = {
     "primary": "openai/gpt-oss-120b",
@@ -34,10 +20,6 @@ MODEL_REGISTRY = {
 
 
 def get_chat_model(api_key: str = "") -> ChatGroq:
-    """
-    Get a ChatGroq model with automatic fallbacks for the Deep Agent.
-    Returns a single LLM object with fallback chain configured.
-    """
     key = api_key or GROQ_API_KEY
     config = MODEL_REGISTRY
 
@@ -45,7 +27,6 @@ def get_chat_model(api_key: str = "") -> ChatGroq:
         model=config["primary"],
         api_key=key,
         temperature=config["temperature"],
-        max_retries=0,
         request_timeout=10,
     )
 
@@ -66,5 +47,4 @@ def get_chat_model(api_key: str = "") -> ChatGroq:
 
 
 def get_primary_model_name() -> str:
-    """Get the primary model name for display/logging."""
     return MODEL_REGISTRY["primary"]
